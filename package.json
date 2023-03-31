@@ -1,0 +1,12 @@
+{
+  "name": "chat-service",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "scripts": {},
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "socket.io": "^4.6.1"
+  }
+}
