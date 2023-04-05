@@ -17,24 +17,43 @@ export class ChatServer {
     await redisClient.connect()
     const emitter = new Emitter(redisClient);
 
+    // connect event
     this.io.on("connection", (socket) => {
-      console.log(`<====connection: ${socket.id}  uid:${socket.handshake.auth.uid}`)
-      
-      socket.join("room1");
-     
-      this.io.of("/").adapter.on("create-room", (room) => {
-        console.log(`room ${room} was created`);
-      });
 
+      // get uid
+      const uid = socket.handshake.auth.uid;
+      
+      socket.data.uid = uid;
+
+      console.log(`<====connection: ${socket.id}  uid:${uid}`)
+       
+      // socket join room: uid
+      socket.join(uid);
+
+      // room event
+      this.io.of("/").adapter.on("create-room", (room) => {
+        console.log(`room '${room}' was created`);
+      });
       this.io.of("/").adapter.on("join-room", (room, id) => {
-        console.log(`socket ${id} has joined room ${room}`);
+        console.log(`socket '${id}' has joined room '${room}'`);
       });
       
-      socket.on('msg', (msg) => {
+      // msg event
+      socket.on('msg', async (msg) => {
+        const target = msg.target;
         console.log(`socket.on(msg): ${JSON.stringify(msg)}`)
-        console.log(`start to emit!`)
-        emitter.to("room1").except(socket.id).emit("msg", msg);
+
+        const sockets = await this.io.in(target).fetchSockets();
+
+        console.log(`all sockets for uid:${target}`)
+        for(const socket of sockets) {
+          console.log(`id:${socket.id}, data: ${JSON.stringify(socket.data)}`);
+        }
+
+        emitter.to(target).emit("msg", msg);
       })
+
+      // disconnect event
       socket.on("disconnecting", (reason) => {
         console.log(`<====disconnecting: ${reason}`)
       });
