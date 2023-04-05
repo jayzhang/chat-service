@@ -5,115 +5,73 @@ const chatServiceUrl = "http://localhost";
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-
-interface User {
-  id: number, 
-  token: string,
-}
-
-async function receiver(user: User) {
-  console.log(`receiver ${user.id} start`);
-  const socket = io(chatServiceUrl
+ 
+async function receiver(port: number, uid: string) {
+  console.log(`receiver ${uid} start`);
+  const socket = io(chatServiceUrl + ":" + port
     , {
       auth: {
-        token: user.token,
-        version: '2',
-        app: 'boss',
+        uid: uid
       }
     });
   socket.on('msg', function (msg) {
-    console.log(`user ${user.id} 收到msg: <== ${JSON.stringify(msg)}`);
-    const reply = {
-      app: 'boss',
-      target: msg.source,
-      content: `${msg.content} - reply!!!`,
-      type: 0,
-      id: new Date().getTime()+'',
-    };
-    socket.emit('msg', reply);
-    console.log(`user ${user.id} 发送msg: ===> ${JSON.stringify(reply)}`);
-  });
-
-  socket.on('user', function (msg) {
-    console.log(`user ${user.id} 收到user事件:${JSON.stringify(msg)}`);
-  });
-
-  socket.on('rec', function (msg) {
-    console.log(`user ${user.id} 收到rec事件:${JSON.stringify(msg)}`);
+    console.log(`user ${uid} 收到msg: <== ${JSON.stringify(msg)}`);
   });
 }
 
-async function sender(sender: User, receiver: User){
-  console.log(`sender ${sender.id} start`);
-  const socket = io(chatServiceUrl
+async function sender(port: number, senderUid: string, receiverUid: string){
+  console.log(`sender ${senderUid} start`);
+  const socket = io(chatServiceUrl + ":" + port
     , {
       auth: {
-        token: sender.token,
-        version: '2',
-        app: 'boss',
+        uid: senderUid
       }
     });
 
   socket.on('msg', function (msg) {
-    console.log(`user ${sender.id} 收到msg: <== ${JSON.stringify(msg)}`);
-    socket.emit('rec', {id: msg.id});
-    console.log(`user ${sender.id} 发送回执rec: ==> ${JSON.stringify( {id: msg.id})}`);
-  });
-  socket.on('hb', function (msg) {
-    console.log(`user ${sender.id} 收到hb回执: <== ${JSON.stringify(msg)}`);
-  });
-  socket.on('user', function (msg) {
-    console.log(`user ${sender.id} 收到user事件:${JSON.stringify(msg)}`);
-  });
-  socket.on('rec', function (msg) {
-    console.log(`user ${sender.id} 收到rec事件:${JSON.stringify(msg)}`);
+    console.log(`user ${senderUid} 收到msg: <== ${JSON.stringify(msg)}`);
   });
 
   for (let i = 0; i < 1; ++i) {
     const date = new Date();
     const msg = {
       id: new Date().getTime()+'',
-      app: 'boss',
-      target: receiver.id,
+      target: receiverUid,
       content: `test for dev - ${date.getHours()}:${date.getMinutes()}:${date.getSeconds()}`,
-      type: 0,
     };
     socket.emit('msg', msg);
-    console.log(`user ${sender.id} 发送msg: ===> ${JSON.stringify(msg)}`)
-    // await sleep(10);
+    console.log(`user ${senderUid} 发送msg: ===> ${JSON.stringify(msg)}`)
   }
 }
 
-async function keepalive(sender: User, time: number){
-  console.log(`keepalive ${sender.id} start`);
+async function keepalive(senderUid: string, time: number){
+  console.log(`keepalive ${senderUid} start`);
   const socket = io(chatServiceUrl
     , {
       auth: {
-        token: sender.token,
-        version: "2"
+        uid: senderUid
       }
     });
-
   socket.on('msg', function (msg) {
-    console.log(`user ${sender.id} 收到msg: <== ${JSON.stringify(msg)}`);
-    // socket.emit('rec', {id: msg.id});
-    // console.log(`user ${sender.id} 发送回执rec: ==> ${JSON.stringify( {id: msg.id})}`);
+    console.log(`user ${senderUid} 收到msg: <== ${JSON.stringify(msg)}`);
   });
   socket.on('hb', function (msg) {
-    console.log(`user ${sender.id} 收到hb回执: <== ${JSON.stringify(msg)}`);
+    console.log(`user ${senderUid} 收到hb回执: <== ${JSON.stringify(msg)}`);
   });
-  socket.on('user', function (msg) {
-    console.log(`user ${sender.id} 收到user事件:${JSON.stringify(msg)}`);
-  });
-  
-  socket.on('rec', function (msg) {
-    console.log(`user ${sender.id} 收到rec事件:${JSON.stringify(msg)}`);
-  });
-
   while(true) {
     const msg = {id: new Date().getTime() + ""};
     socket.emit('hb', msg);
-    console.log(`user ${sender.id} 发送心跳msg: ===> ${JSON.stringify(msg)}`);
+    console.log(`user ${senderUid} 发送心跳msg: ===> ${JSON.stringify(msg)}`);
     await sleep(time);
   }
+}
+const args = process.argv;
+const serverPort = Number(args[2]);
+const type = args[3];
+const uid = args[4];
+const uid2 = args[5];
+if (type === "recv") {
+  receiver(serverPort, uid);
+} else if(type === "send") {
+  sender(serverPort, uid, uid2);
 }
