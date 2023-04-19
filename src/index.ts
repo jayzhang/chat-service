@@ -31,7 +31,34 @@ export class ConsoleLogger implements ILogger {
 }
 
 
-export interface ChatMessage {
+export interface IMessageListener {
+  /**
+   * 监听器id
+   */
+  id: string;
+
+  /**
+   * 发送给目标的event
+   */
+  targetEvent: string;
+  /**
+   * 同步给发送者的event，如果undefined，则不对消息进行同步
+   */
+  sourceEvent?: string;
+
+  /**
+   * 消息处理器
+   * @param socket 
+   * @param msg 
+   * @param emitter 
+   * @returns 
+   */
+  handlers: ((msg: IMessage, socket: Socket, emitter: Emitter, server: Server) => Promise<boolean> | boolean) [];
+}
+ 
+export type ISocketListener = (socket: Socket, other?: any) => Promise<boolean> | boolean;
+
+export interface IMessage {
   id: string;
   source: string;
   target: string;
@@ -44,40 +71,37 @@ export function socketInfo(socket: Socket) {
 
 export interface ChatServerOptions extends ServerOptions{
   port: number;
-  enableRedisAdapter: boolean;
   redisUrl: string;
-  messageEventName: string;
-  messageSyncEventName: string;
   logger: ILogger;
 }
 
 export class DefaultChatServerOptions implements Partial<ChatServerOptions> {
-  port = 80;
+  port = 8001;
   redisUrl = 'redis://localhost:6379';
-  messageEventName = 'msg';
-  messageSyncEventName = 'msg';
   logger = new ConsoleLogger;
 }
 
 export class ChatServer {
   io: Server;
-
   options = new DefaultChatServerOptions();
+  messageListeners: IMessageListener[] = [];
 
-  /**
-   * 连接处理器，处理用户认证逻辑
-   */
-  onConnectHandler: (socket: Socket) => Promise<boolean> | boolean = (socket) => {
+  connectionListener: ISocketListener = (socket: Socket) => { 
     const uid = socket.handshake.auth.uid;
     socket.data.uid = uid;
     return true;
   };
 
-  /**
-   * 消息处理器，可以有多个
-   */
-  onMessageHandlers: ((socket: Socket, event: string, msg: ChatMessage, emitter: Emitter) => Promise<boolean> | boolean )[] = [];
+  disconnectingListener?: ISocketListener;
 
+  registerMessageListener(listener: IMessageListener) {
+    this.messageListeners.push(listener);
+  }
+  
+  unregisterMessageListener(id: string) {
+    this.messageListeners = this.messageListeners.filter(l=>l.id !== id);
+  }
+ 
   constructor(opts?: Partial<ChatServerOptions>){
     if (opts) {
       Object.assign(this.options, opts)
@@ -85,6 +109,10 @@ export class ChatServer {
   }
 
   async start(){
+
+    if (!this.messageListeners || this.messageListeners.length === 0) {
+      throw new Error('please register message listeners');
+    } 
     this.io = new Server(this.options as Partial<ServerOptions>);
 
     const pubClient = createClient({ url: this.options.redisUrl });
@@ -93,51 +121,44 @@ export class ChatServer {
     const redisClient = createClient({ url: this.options.redisUrl });
     await redisClient.connect()
     const emitter = new Emitter(redisClient);
-
-    // connect event
+ 
     this.io.on("connection", async (socket) => {
-  
-      let success = await this.onConnectHandler(socket);
-
-      if (!success) {
+      if (!await this.connectionListener(socket)) {
         socket.disconnect();
+        return;
       }
-
       this.options.logger.info(`<====== [event: connection] socket: ${socketInfo(socket)}`)
-
       socket.join(socket.data.uid);
-
-      // msg event
-      socket.on(this.options.messageEventName, async (msg) => {
-        this.options.logger.info(`<====== [event:${this.options.messageEventName}] socket:${socketInfo(socket)} msg: ${JSON.stringify(msg)}`)
-        msg.source = socket.data.uid;
-
-        const chatMsg = msg as ChatMessage;
-
-        for(const handler of this.onMessageHandlers) {
-          success = await handler(socket, this.options.messageEventName, chatMsg, emitter);
-          if (!success) {
-            return;
+      socket.data.time = new Date().getTime();
+      for(const listener of this.messageListeners) {
+        socket.on(listener.targetEvent, async (msg: IMessage) => {
+          msg.source = socket.data.uid;
+          socket.data.time = new Date().getTime
+          this.options.logger.info(`<====== [event:${listener.targetEvent}] socket:${socketInfo(socket)} msg: ${JSON.stringify(msg)}`)
+          for(const handler of listener.handlers) {
+            const success = await handler(msg, socket, emitter, this.io);
+            if (!success) {
+              return;
+            }
           }
-        }
-
-        const target = msg.target;
-
-        //给接收端转发消息
-        emitter.to(target).emit(this.options.messageEventName, msg);
-        this.options.logger.info(`======> [event:${this.options.messageEventName}, room:${target}] msg: ${JSON.stringify(msg)}`)
-
-        //给发送端同步消息
-        emitter.to(msg.source).emit(this.options.messageSyncEventName, msg);
-        this.options.logger.info(`======> [event:${this.options.messageSyncEventName}, room:${msg.source}] msg: ${JSON.stringify(msg)}`)
-      })
-
+          //给接收端转发消息
+          emitter.to(msg.target).emit(listener.targetEvent, msg);
+          this.options.logger.info(`======> [event:${listener.targetEvent}, room:${msg.target}] msg: ${JSON.stringify(msg)}`)
+          if (listener.sourceEvent) {
+            //给发送端同步消息
+            emitter.to(msg.source).emit(listener.sourceEvent, msg);
+            this.options.logger.info(`======> [event:${listener.sourceEvent}, room:${msg.source}] msg: ${JSON.stringify(msg)}`)
+          }
+        })
+      }
       // disconnect event
-      socket.on("disconnecting", (reason) => {
+      socket.on("disconnecting", async (reason) => {
+        if (this.disconnectingListener) {
+          await this.disconnectingListener(socket, reason);
+        }
         this.options.logger.info(`<====== [event: disconnecting] socket:${socketInfo(socket)} reason: ${reason}`)
       });
     });
-
     Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
       this.io.adapter(createAdapter(pubClient, subClient));
       this.io.listen(this.options.port);
@@ -152,16 +173,24 @@ export class ChatServer {
 const port = Number(process.argv[2]);
 
 const chatServer = new ChatServer({
-  port: port
+  port: port,
 });
 
-chatServer.onMessageHandlers.push(
-  (socket: Socket, event: string, msg: ChatMessage, emitter: Emitter) =>{
-    console.log(`处理消息: ${JSON.stringify(msg)}`);
-    return true;
-  }
-);
-
+chatServer.registerMessageListener({
+  id: "1",
+  targetEvent:"msg",
+  sourceEvent:"msg",
+  handlers: [
+    async (msg: IMessage, socket: Socket, emitter: Emitter, server: Server) => {
+      console.log(`listener: ${JSON.stringify(msg)}`)
+      const sockets = await server.in(msg.target).fetchSockets();
+      for(const socket of sockets) {
+        console.log(`listener: 在线socket  id:${socket.id}, data: ${JSON.stringify(socket.data)}, rooms: ${Array.from(socket.rooms)}`);
+      }
+      return true;
+    }
+  ]
+})
 chatServer.start();
 
 
